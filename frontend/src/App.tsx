@@ -2,10 +2,20 @@ import { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, Video, CameraOff, Wrench } from 'lucide-react';
 import './App.css';
 
+interface PointingGuide {
+  objectName: string;
+  ymin: number;
+  xmin: number;
+  ymax: number;
+  xmax: number;
+  timestamp: number;
+}
+
 function App() {
   const [isListening, setIsListening] = useState(false);
   const [cameraActive, setCameraActive] = useState(true);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [pointingGuide, setPointingGuide] = useState<PointingGuide | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -42,7 +52,12 @@ function App() {
 
   // simple WebSocket connection to backend
   useEffect(() => {
-    wsRef.current = new WebSocket('wss://fixmate-backend-101566445954.us-central1.run.app');
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = import.meta.env.MODE === 'development'
+      ? `${protocol}//${window.location.host}/ws`
+      : 'wss://fixmate-backend-101566445954.us-central1.run.app';
+
+    wsRef.current = new WebSocket(wsUrl);
 
     wsRef.current.onopen = () => {
       console.log('Connected to FixMate Backend');
@@ -55,9 +70,51 @@ function App() {
       }
       try {
         const chunk = JSON.parse(data);
+
+        // Extract function calls from root (Gemini Live typical format) or from parts
+        const calls = [];
+        if (chunk.toolCall?.functionCalls) {
+          calls.push(...chunk.toolCall.functionCalls);
+        }
+        if (chunk.serverContent?.modelTurn?.parts) {
+          for (const part of chunk.serverContent.modelTurn.parts) {
+            if (part.functionCall) calls.push(part.functionCall);
+          }
+        }
+
+        // Process any found tool calls
+        for (const call of calls) {
+          if (call.name === 'show_pointing_guide') {
+            const args = call.args;
+            if (args) {
+              setPointingGuide({
+                objectName: args.objectName || 'Object',
+                ymin: args.ymin,
+                xmin: args.xmin,
+                ymax: args.ymax,
+                xmax: args.xmax,
+                timestamp: Date.now()
+              });
+
+              // Clear the box automatically
+              setTimeout(() => {
+                setPointingGuide(prev => {
+                  if (prev && Date.now() - prev.timestamp >= 3900) {
+                    return null;
+                  }
+                  return prev;
+                });
+              }, 4000);
+            }
+          }
+        }
+
         if (chunk.serverContent?.modelTurn?.parts) {
           const parts = chunk.serverContent.modelTurn.parts;
+
           for (const part of parts) {
+
+            // Check for audio data
             if (part.inlineData && part.inlineData.data) {
               const base64 = part.inlineData.data;
               const binaryStr = atob(base64);
@@ -210,6 +267,21 @@ function App() {
           </>
         ) : (
           <div className="camera-off-placeholder">Camera Offline</div>
+        )}
+
+        {/* Dynamic Bounding Box Overlay */}
+        {pointingGuide && (
+          <div
+            className="bounding-box glow-effect scale-in"
+            style={{
+              top: `${(pointingGuide.ymin / 1000) * 100}%`,
+              left: `${(pointingGuide.xmin / 1000) * 100}%`,
+              height: `${((pointingGuide.ymax - pointingGuide.ymin) / 1000) * 100}%`,
+              width: `${((pointingGuide.xmax - pointingGuide.xmin) / 1000) * 100}%`,
+            }}
+          >
+            <span className="bounding-box-label">{pointingGuide.objectName}</span>
+          </div>
         )}
       </div>
 
